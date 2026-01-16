@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_gateway
+    environment:
+      POSTGRES_USER: gateway_user
+      POSTGRES_PASSWORD: gateway_pass
+      POSTGRES_DB: payment_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_user -d payment_gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis_gateway
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gateway_api
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://gateway_user:gateway_pass@postgres:5432/payment_gateway
+      REDIS_URL: redis://redis:6379
+      TEST_MODE: "false"
+      TEST_PAYMENT_SUCCESS: "true"
+      TEST_PROCESSING_DELAY: "1000"
+      WEBHOOK_RETRY_INTERVALS_TEST: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: gateway_worker
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://gateway_user:gateway_pass@postgres:5432/payment_gateway
+      REDIS_URL: redis://redis:6379
+      TEST_MODE: "false"
+      TEST_PAYMENT_SUCCESS: "true"
+      TEST_PROCESSING_DELAY: "1000"
+      WEBHOOK_RETRY_INTERVALS_TEST: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: gateway_dashboard
+    ports:
+      - "3001:3001"
+    environment:
+      REACT_APP_API_URL: http://localhost:3000/api/v1
+    depends_on:
+      - api
+
+  checkout:
+    build:
+      context: ./checkout-widget
+      dockerfile: Dockerfile
+    container_name: gateway_checkout
+    ports:
+      - "3002:3002"
+    environment:
+      REACT_APP_API_URL: http://localhost:3000/api/v1
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: payment_gateway_network
